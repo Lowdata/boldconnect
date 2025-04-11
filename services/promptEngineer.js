@@ -1,6 +1,8 @@
+/* eslint-disable no-useless-escape */
 // services/promptEngineer.js
 
 // --- DETAILED SCHEMA CONTEXT ---
+// Define SCHEMA_CONTEXT only once
 const SCHEMA_CONTEXT = `
 You have access to a MongoDB database with the following collections and schemas:
 
@@ -18,8 +20,8 @@ You have access to a MongoDB database with the following collections and schemas
 * Purpose: Detailed contact information, often aggregated (e.g., from LinkedIn).
 * Schema: _id (ObjectId), userId (ObjectId -> users), biographies (Array), createdAt (Date), emailAddresses (Array), linkedInCertifications (Array), linkedInCourses (Array), linkedInEducation (Array), linkedInHeadline (String), linkedInHonors (Array), linkedInIndustry (String), linkedInLocation (String), linkedInMetadata (Object), linkedInProfileConnectionDate (Date/null), linkedInProfileCurrentRole (String), linkedInProfileFirstName (String), linkedInProfileFullName (String), linkedInProfileLastName (String), linkedInProjects (Array), linkedInSkills (Array), linkedInUrl (String), linkedInVolunteer (Array), linkedInexperience (Array), linkedInlanguages (Array), linkedInpublications (Array), names (Array), organizations (Array), resourceName (String), socialProfiles (Array), source (String), updatedAt (Date), goalFrequency (String/null), goalSetDate (Date/null), __v (Number) // Expanded slightly for clarity
 * Relationships: Many-to-One with users via userId. Referenced by activities, contactlabelrelations, contacttags, interactions, reminders via contactId.
-* Notes: \`organizations.name\` usually refers to *companies/work places*. \`linkedInEducation.school\` refers to *educational institutions*. Use the correct field based on context (e.g., "worked at X" vs. "studied at Y" or "from Y University").
-* **A text index exists on fields like \`biographies.value\`, \`linkedInHeadline\`, \`linkedInexperience.title\`, \`linkedInexperience.description\`, \`linkedInSkills.name\` allowing efficient free-text search using the MongoDB \`$text\` operator.**
+* Notes: 'organizations.name' usually refers to *companies/work places*. 'linkedInEducation.school' refers to *educational institutions*. Use the correct field based on context (e.g., "worked at X" vs. "studied at Y" or "from Y University").
+* **A text index exists on fields like 'biographies.value', 'linkedInHeadline', 'linkedInexperience.title', 'linkedInexperience.description', 'linkedInSkills.name' allowing efficient free-text search using the MongoDB '$text' operator.**
 
 **Collection: contactcards**
 * Purpose: User's own profile cards (e.g., Personal, Business).
@@ -72,131 +74,169 @@ You have access to a MongoDB database with the following collections and schemas
 * Relationships: Many-to-One with users.
 
 **Important Considerations:**
-* Joins require MongoDB Aggregation Pipeline's \`$lookup\` stage.
-* Filtering often requires \`$match\`. For potentially ambiguous terms like industry or job titles, consider generating an array of possible values or using partial regex matching without anchors (^$).
-* Shaping output requires \`$project\`.
-* Date comparisons might involve \`$gte\`, \`$lte\`.
-* Text search uses the \`$text\` operator and its index.
+* Joins require MongoDB Aggregation Pipeline's '$lookup' stage.
+* Filtering often requires '$match'. For potentially ambiguous terms like industry or job titles, consider generating an array of possible values or using partial regex matching without anchors (^$).
+* Shaping output requires '$project'.
+* Date comparisons might involve '$gte', '$lte'.
+* Text search uses the '$text' operator and its index.
 * Assume queries are for a specific user context.
 ---
-`;
+`; // End of SCHEMA_CONTEXT template literal
 
 // --- PROMPT TEMPLATES ---
 
-// Updated Prompt 1: Identify Keywords/Collections (Emphasizing array output with examples)
+// Removed the duplicate SCHEMA_CONTEXT declaration that was here.
+
+// Updated Prompt 1: Identify Keywords/Collections (Explicit Regex for Labels/Tags)
 function getIdentifyKeywordsPrompt(userQuery) {
-    return `
-${SCHEMA_CONTEXT}
+    // Use template literal for multi-line string
+    return `${SCHEMA_CONTEXT}
 
 **Task:**
-Analyze the user query for key entities, concepts, constraints, and values. Differentiate between criteria that map to specific structured fields (like labels, tags, organizations, education, industry) and criteria requiring a broader semantic text search. Determine the primary MongoDB collection and any related collections for joins.
+Analyze the user query for key entities, concepts, constraints, and values. Differentiate between criteria that map to specific structured fields and criteria requiring broader text search. Determine the primary collection and any related collections.
 
 **User Query:** "${userQuery}"
 
 **Output Format:**
 Respond ONLY with a JSON object containing:
 - "primaryCollection": (String) e.g., "contacts".
-- "relatedCollections": (Array of Strings) e.g., ["labels", "contactlabelrelations"].
-- "structuredFilters": (Object) Key-value pairs for filtering on specific fields. **IMPORTANT: For ambiguous fields like 'linkedInIndustry' or job titles (e.g., 'software engineer'), you MUST provide an ARRAY of likely specific string values found in the database.** Example: If the user asks for "software industry", the value for "linkedInIndustry" MUST be an array like ["Computer Software", "Information Technology & Services", "Software Development"]. If the user asks for "software engineer", the value for a title field might be ["Software Engineer", "Senior Software Engineer", "Software Development Engineer"]. For unambiguous fields (like specific school names or labels), use a single string value. Leave empty if no structured filters apply.
-- "textSearchKeywords": (String) A space-separated string of keywords relevant for a broad text search across indexed text fields (e.g., "investor funding startup venture capital"). Extract terms related to roles, concepts, industries mentioned semantically. Leave empty if the query targets only specific structured fields.
-- "projection": (Array of Strings) Optional: Suggested output fields (e.g., ["names", "linkedInHeadline"]).
+- "relatedCollections": (Array of Strings) e.g., ["labels", "contactlabelrelations", "tags", "contacttags"].
+- "structuredFilters": (Object) Key-value pairs for filtering.
+    * **IMPORTANT: For fields like 'labels.labelName' and 'tags.name', ALWAYS generate a case-insensitive regex object for the value, even if the user query seems specific. This handles variations in casing and potentially minor variations like plurals.** Example: \`{ "labels.labelName": { "$regex": "Searched Term", "$options": "i" } }\`
+    * For ambiguous fields like 'linkedInIndustry' or job titles, provide an ARRAY of likely specific string values found in the database. Example: \`{"linkedInIndustry": ["Computer Software", "Information Technology & Services", "Software Development"]}\`.
+    * For unambiguous fields (like specific school names), use a single string value.
+    * Leave empty if no structured filters apply.
+- "textSearchKeywords": (String) Space-separated keywords for broad text search (roles, concepts, industries). Extract relevant terms, *especially if the user query has potential misspellings or uses ambiguous terms that might not map perfectly to structured fields*. Leave empty if only structured fields are targeted.
+- "projection": (Array of Strings) Optional: Suggested output fields.
 
 **Example Interpretations:**
 
 Query: "Show me VCs who invested in SaaS startups"
-Output: \`\`\`json
+Output: \\\`\`\`json
 {
   "primaryCollection": "contacts",
   "relatedCollections": ["tags", "contacttags"],
-  "structuredFilters": {"tags.name": "SaaS"},
-  "textSearchKeywords": "VC venture capital investor invested",
+  "structuredFilters": {
+      "tags.name": { "$regex": "SaaS", "$options": "i" } // Use regex for tags
+  },
+  "textSearchKeywords": "VC venture capital investor invested startup", // Broader terms
   "projection": ["names", "linkedInHeadline"]
 }
-\`\`\`
+\\\`\`\`
 
 Query: "people from Google"
-Output: \`\`\`json
+Output: \\\`\`\`json
 {
   "primaryCollection": "contacts",
   "relatedCollections": [],
-  "structuredFilters": {"organizations.name": "Google"},
+  "structuredFilters": {
+      "organizations.name": "Google" // Specific organization, string is okay
+                                      // OR could use: { "$regex": "Google", "$options": "i" } for flexibility
+  },
   "textSearchKeywords": "",
   "projection": ["names", "organizations"]
 }
-\`\`\`
+\\\`\`\`
 
 Query: "people in the software industry"
-Output: \`\`\`json
+Output: \\\`\`\`json
 {
   "primaryCollection": "contacts",
   "relatedCollections": [],
-  "structuredFilters": {"linkedInIndustry": ["Computer Software", "Information Technology & Services", "Software Development", "Information Technology and Services"]},
+  "structuredFilters": {
+      "linkedInIndustry": ["Computer Software", "Information Technology & Services", "Software Development", "Information Technology and Services"] // Array for industry
+  },
   "textSearchKeywords": "",
   "projection": ["names", "linkedInIndustry"]
 }
-\`\`\`
+\\\`\`\`
 
-Query: "contacts who can help with funding"
-Output: \`\`\`json
+Query: "can u tell me any School Froiend of mine with linkedin certificates" // Note the typo "Froiend"
+Output: \\\`\`\`json
 {
   "primaryCollection": "contacts",
-  "relatedCollections": [],
-  "structuredFilters": {},
-  "textSearchKeywords": "funding fundraise investor angel venture capital seed investment finance",
-  "projection": ["names", "linkedInHeadline"]
+  "relatedCollections": ["labels", "contactlabelrelations", "tags", "contacttags"],
+  "structuredFilters": {
+    "$or": [
+      { "labels.labelName": { "$regex": "School Friend", "$options": "i" } }, // Use regex for labelName
+      { "tags.name": { "$regex": "School Friend", "$options": "i" } }      // Use regex for tagName
+                                                                           // AI should ideally correct "Froiend" to "Friend"
+    ],
+    "linkedInCertifications": { "$exists": true, "$not": { "$size": 0 } } // Filter for non-empty array
+  },
+  "textSearchKeywords": "School Froiend Friend linkedin certificates", // Include original term and corrected version
+  "projection": ["names", "linkedInCertifications", "linkedInHeadline", "labels.labelName", "tags.name"] // Maybe project label/tag name
 }
-\`\`\`
+\\\`\`\`
 
-Provide ONLY the JSON object.
-`;
+Provide ONLY the JSON object.`; // End of getIdentifyKeywordsPrompt template literal
 }
 
+// --- Keep getGenerateQueryPrompt as is, but ensure it handles regex objects ---
 
-// Updated Prompt 2: Generate Query (handling $in for arrays, flexible regex for strings)
-// This prompt remains the same as the previous version, as its logic was correct given the expected input format.
+// The existing getGenerateQueryPrompt logic should work IF it correctly handles
+// receiving a pre-formed regex object within structuredFilters.
+// Let's double-check its instructions:
+
 function getGenerateQueryPrompt(userQuery, analysis) {
     // analysis is the JSON object from the previous step
-    return `
-${SCHEMA_CONTEXT}
+    return `${SCHEMA_CONTEXT}
 
 **User Query:** "${userQuery}"
 
 **Analysis from previous step:**
-\`\`\`json
+\\\`\`\`json
 ${JSON.stringify(analysis, null, 2)}
-\`\`\`
+\\\`\`\`
 
 **Task:**
 Generate a MongoDB Aggregation Pipeline based on the analysis:
-1.  Start from the \`primaryCollection\`. Assume an initial \`$match\` for the specific user's \`userId\` will be added later.
-2.  If \`textSearchKeywords\` is present in the analysis and not empty, add an early \`$match\` stage using the \`$text\` operator: \`{ $text: { $search: "keywords here" } }\`.
-3.  If needed (\`relatedCollections\` is not empty), perform \`$lookup\` stages for \`relatedCollections\` to fetch data.
-4.  Add further \`$match\` stages to apply the \`structuredFilters\`.
-    * **If the value for a filter key in \`structuredFilters\` is an ARRAY, use the \`$in\` operator for the match (e.g., \`{ "linkedInIndustry": { "$in": ["Value1", "Value2"] } }\`).**
-    * **If the value is a STRING, use case-insensitive regex BUT AVOID using start (^) and end ($) anchors unless an exact match is clearly implied by the user query. Use a simple substring match regex (e.g., \`{ "field": { "$regex": "value", "$options": "i" } }\`).**
-    * Handle date strings by converting them to appropriate query operators ($gte, $lte) based on the current date: ${new Date().toISOString()}. Apply filters to the correct fields (primary collection or looked-up fields like \`joinedLabels.labelName\`).
-5.  **Structure the pipeline logically:** User Match -> Text Match (if applicable) -> Lookups (if applicable) -> Match on Structured/Looked-up Fields (if applicable). Assume AND logic (sequential matches) unless OR is specified.
-6.  Use a final \`$project\` stage based on the \`projection\` analysis or general relevance. Include \`{ score: { $meta: "textScore" } }\` if using \`$text\`. Exclude internal/sensitive fields.
+1.  Start from the 'primaryCollection'. Assume an initial \$match for 'userId' will be added later.
+2.  If 'textSearchKeywords' is present and not empty, add an early \$match stage: \`{ $text: { $search: "keywords here" } }\`.
+3.  If needed ('relatedCollections' is not empty), perform \$lookup stages.
+4.  Add further \$match stages for 'structuredFilters'.
+    * **If the value for a filter key is an ARRAY, use \$in (e.g., \`{ "field": { "$in": [...] } }\`).**
+    * **If the value is a STRING, use case-insensitive regex WITHOUT start (^) / end ($) anchors unless exact match is implied (e.g., \`{ "field": { "$regex": "value", "$options": "i" } }\`).**
+    * **If the value is ALREADY a regex object (like \`{ "$regex": "pattern", "$options": "i" }\`), use that object directly in the match.**
+    * Handle date strings/objects using appropriate operators (\$gte, \$lte, etc.). Apply filters to the correct fields (primary collection or looked-up fields like 'joinedLabels.labelName'). Handle complex filters like \`$or\` or \`$and\` present in the analysis.
+5.  Structure the pipeline logically: User Match -> Text Match -> Lookups -> Structured/Lookup Field Match.
+6.  Use a final \$project stage based on 'projection' or general relevance. Include \`{ score: { $meta: "textScore" } }\` if using \$text. Exclude internal/sensitive fields.
 
 **Output Format:**
 Respond ONLY with the MongoDB aggregation pipeline as a JSON array of stage objects: \`[ { ... stage 1 ... }, { ... stage 2 ... } ]\`. Return \`[]\` if query cannot be formed.
 
-**Example Structured Filter Stages:**
-\`\`\`json
-// If analysis was structuredFilters: {"linkedInIndustry": ["Computer Software", "IT&S"]}
-{ "$match": { "linkedInIndustry": { "$in": ["Computer Software", "IT&S"] } } }
+**Example Filter Stage Handling:**
 
-// If analysis was structuredFilters: {"linkedInHeadline": "Director"}
-{ "$match": { "linkedInHeadline": { "$regex": "Director", "$options": "i" } } } // Partial match, case-insensitive
-\`\`\`
+// Analysis: { "linkedInIndustry": ["Value1", "Value2"] } -> Stage:
+{ "$match": { "linkedInIndustry": { "$in": ["Value1", "Value2"] } } }
 
-Provide ONLY the JSON array for the pipeline.
-`;
+// Analysis: { "linkedInHeadline": "Director" } -> Stage:
+{ "$match": { "linkedInHeadline": { "$regex": "Director", "$options": "i" } } }
+
+// Analysis: { "labels.labelName": { "$regex": "School Friend", "$options": "i" } } -> Stage (likely within a $lookup pipeline or later $match):
+// The generator needs to place this correctly, e.g., in a $match *after* the relevant $lookup OR *inside* the $lookup's pipeline.
+// Example *inside* $lookup:
+{
+  "\$lookup": {
+    "from": "contactlabelrelations", /* ... */
+    "pipeline": [
+      { "\$lookup": { "from": "labels", /* ... */ "as": "labelDetails" } },
+      { "\$unwind": "\$labelDetails" }, // Optional: unwind for easier matching
+      { "\$match": { "labelDetails.labelName": { "\$regex": "School Friend", "\$options": "i" } } } // Match on looked-up field
+    ],
+    "as": "..."
+  }
+}
+// OR Example *after* $lookup:
+{ "\$match": { "joinedLabelRelations.labelDetails.labelName": { "\$regex": "School Friend", "\$options": "i" } } } // Requires correct 'as' and potentially $unwind before
+
+
+Provide ONLY the JSON array for the pipeline.`; // End of getGenerateQueryPrompt template literal
 }
 
 
 module.exports = {
-    SCHEMA_CONTEXT,
+    SCHEMA_CONTEXT, // Export the single SCHEMA_CONTEXT constant
     getIdentifyKeywordsPrompt,
     getGenerateQueryPrompt,
 };
